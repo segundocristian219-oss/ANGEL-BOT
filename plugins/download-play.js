@@ -1,159 +1,247 @@
-import axios from "axios";
-import yts from "yt-search";
-import fs from "fs";
-import path from "path";
-import ffmpeg from "fluent-ffmpeg";
-import { promisify } from "util";
-import { pipeline } from "stream";
+import axios from "axios"
+import yts from "yt-search"
+import fs from "fs"
+import path from "path"
+import ffmpeg from "fluent-ffmpeg"
+import { promisify } from "util"
+import { pipeline } from "stream"
+import crypto from "crypto"
 
-const streamPipe = promisify(pipeline);
+const streamPipe = promisify(pipeline)
+const TMP_DIR = path.join(process.cwd(), "tmp")
+if (!fs.existsSync(TMP_DIR)) fs.mkdirSync(TMP_DIR, { recursive: true })
 
-// ==== CONFIG DE TU API ====
-const API_BASE = process.env.API_BASE || "https://api-sky.ultraplus.click";
-const API_KEY  = process.env.API_KEY  || "Russellxz"; // <-- tu API Key
+const SKY_BASE = process.env.API_BASE || "https://api-sky.ultraplus.click"
+const SKY_KEY = process.env.API_KEY || "Russellxz"
 
-// ==== UTILIDADES ====
-async function downloadToFile(url, filePath) {
-  const res = await axios.get(url, { responseType: "stream" });
-  await streamPipe(res.data, fs.createWriteStream(filePath));
-  return filePath;
+const pending = {}
+const cache = {}
+const MAX_CONCURRENT = 3
+let activeDownloads = 0
+const downloadQueue = []
+
+function safeUnlink(file) {
+  if (!file) return
+  try { fs.existsSync(file) && fs.unlinkSync(file) } catch {}
 }
 
 function fileSizeMB(filePath) {
-  const b = fs.statSync(filePath).size;
-  return b / (1024 * 1024);
+  return fs.statSync(filePath).size / (1024 * 1024)
 }
 
-async function callMyApi(url, format) {
-  const r = await axios.get(`${API_BASE}/api/download/yt.php`, {
-    params: { url, format },
-    headers: { Authorization: `Bearer ${API_KEY}` },
-    timeout: 60000
-  });
-  if (!r.data || r.data.status !== "true" || !r.data.data) {
-    throw new Error("API inválida o sin datos");
+async function queueDownload(task) {
+  if (activeDownloads >= MAX_CONCURRENT) {
+    await new Promise(resolve => downloadQueue.push(resolve))
   }
-  return r.data.data;
+  activeDownloads++
+  try {
+    return await task()
+  } finally {
+    activeDownloads--
+    if (downloadQueue.length) downloadQueue.shift()()
+  }
 }
 
-// ==== COMANDO PRINCIPAL ====
-const handler = async (msg, { conn, text }) => {
-  const pref = global.prefixes?.[0] || ".";
+async function downloadToFile(url, filePath, timeout = 60000) {
+  const res = await axios.get(url, {
+    responseType: "stream",
+    timeout,
+    headers: { "User-Agent": "Mozilla/5.0 (Linux; Android 10; WhatsAppBot)" }
+  })
+  await streamPipe(res.data, fs.createWriteStream(filePath))
+  return filePath
+}
 
-  if (!text || !text.trim()) {
-    return conn.sendMessage(
-      msg.key.remoteJid,
-      { text: `✳️ Usa:\n${pref}play <término>\nEj: *${pref}play* bad bunny diles` },
-      { quoted: msg }
-    );
+async function getSkyApiUrl(videoUrl, format, timeout = 20000) {
+  try {
+    const { data } = await axios.get(`${SKY_BASE}/api/download/yt.php`, {
+      params: { url: videoUrl, format },
+      headers: { Authorization: `Bearer ${SKY_KEY}` },
+      timeout
+    })
+    const result = data?.data || data
+    const url = result?.audio || result?.video || result?.url || result?.download
+    if (!url || !url.startsWith("http")) throw new Error("URL inválida de SKY API")
+    return url
+  } catch {
+    return null
   }
+}
 
-  // reacción de carga
-  await conn.sendMessage(msg.key.remoteJid, {
-    react: { text: "🕒", key: msg.key }
-  });
+async function convertToMp3(inputFile) {
+  const outFile = inputFile.replace(/_in\.\w+$/, "_out.mp3")
+  await new Promise((resolve, reject) =>
+    ffmpeg(inputFile)
+      .audioCodec("libmp3lame")
+      .audioBitrate("128k")
+      .format("mp3")
+      .save(outFile)
+      .on("end", resolve)
+      .on("error", reject)
+  )
+  safeUnlink(inputFile)
+  return outFile
+}
 
-  // búsqueda
-  const res = await yts(text);
-  const video = res.videos?.[0];
-  if (!video) {
-    return conn.sendMessage(msg.key.remoteJid, { text: "❌ Sin resultados." }, { quoted: msg });
-  }
+async function prepareFormats(videoUrl, id) {
+  const groups = [
+    [
+      { key: "audio", format: "audio", ext: "mp3" },
+      { key: "video", format: "video", ext: "mp4" }
+    ],
+    [
+      { key: "audioDoc", format: "audio", ext: "mp3" },
+      { key: "videoDoc", format: "video", ext: "mp4" }
+    ]
+  ]
 
-  const { url: videoUrl, title, author, timestamp: duration, views, thumbnail } = video;
+  cache[id] = { timestamp: Date.now(), files: {} }
 
-  // plantilla decorada ✨
-  const caption = `
-> *𝙰𝚄𝙳𝙸𝙾 𝙳𝙾𝚆𝙽𝙻𝙾𝙰𝙳𝙴𝚁*
+  try {
+    await Promise.all(groups[0].map(async f => {
+      const mediaUrl = await getSkyApiUrl(videoUrl, f.format)
+      if (!mediaUrl) return
+      const unique = crypto.randomUUID()
+      const file = path.join(TMP_DIR, `${unique}_${f.key}.${f.ext}`)
+      await queueDownload(() => downloadToFile(mediaUrl, file))
+      cache[id].files[f.key] = file
+    }))
+  } catch {}
 
-⭒ ִֶָ७ ꯭🎵˙⋆｡ - *𝚃𝚒́𝚝𝚞𝚕𝚘:* ${title}
-⭒ ִֶָ७ ꯭🎤˙⋆｡ - *𝙰𝚛𝚝𝚒𝚜𝚝𝚊:* ${author?.name || "Desconocido"}
-⭒ ִֶָ७ ꯭🕑˙⋆｡ - *𝙳𝚞𝚛𝚊𝚌𝚒ó𝚗:* ${duration}
-⭒ ִֶָ७ ꯭📺˙⋆｡ - *𝙲𝚊𝚕𝚒𝚍𝚊𝚍:* 128kbps
-⭒ ִֶָ७ ꯭🌐˙⋆｡ - *𝙰𝚙𝚒:* sky
-
-» *𝘌𝘕𝘝𝘐𝘈𝘕𝘋𝘖 𝘈𝘜𝘋𝘐𝘖* 🎧
-» *𝘈𝘎𝘜𝘈𝘙𝘋𝘌 𝘜𝘕 𝘗𝘖𝘊𝘖*...
-
-⇆‌ ㅤ◁ㅤㅤ❚❚ㅤㅤ▷ㅤ↻
-
-> \`\`\`© 𝖯𝗈𝗐𝖾𝗋𝖾𝗱 𝖻𝗒 hernandez.𝗑𝗒𝗓\`\`\`
-`.trim();
-
-  // envía preview con info
-  await conn.sendMessage(
-    msg.key.remoteJid,
-    { image: { url: thumbnail }, caption },
-    { quoted: msg }
-  );
-
-  // descarga y envía el audio
-  await downloadAudio(conn, msg, videoUrl, title);
-
-  // reacción final
-  await conn.sendMessage(msg.key.remoteJid, {
-    react: { text: "✅", key: msg.key }
-  });
-};
-
-// ==== DESCARGA DE AUDIO ====
-async function downloadAudio(conn, msg, videoUrl, title) {
-  const chatId = msg.key.remoteJid;
-
-  const data = await callMyApi(videoUrl, "audio");
-  const mediaUrl = data.audio || data.video;
-  if (!mediaUrl) throw new Error("No se pudo obtener audio");
-
-  const tmp = path.join(process.cwd(), "tmp");
-  if (!fs.existsSync(tmp)) fs.mkdirSync(tmp, { recursive: true });
-
-  const urlPath = new URL(mediaUrl).pathname || "";
-  const ext = (urlPath.split(".").pop() || "").toLowerCase();
-  const isMp3 = ext === "mp3";
-
-  const inFile = path.join(tmp, `${Date.now()}_in.${ext || "bin"}`);
-  await downloadToFile(mediaUrl, inFile);
-
-  let outFile = inFile;
-  if (!isMp3) {
-    const tryOut = path.join(tmp, `${Date.now()}_out.mp3`);
+  for (const f of groups[1]) {
     try {
-      await new Promise((resolve, reject) =>
-        ffmpeg(inFile)
-          .audioCodec("libmp3lame")
-          .audioBitrate("128k")
-          .format("mp3")
-          .save(tryOut)
-          .on("end", resolve)
-          .on("error", reject)
-      );
-      outFile = tryOut;
-      try { fs.unlinkSync(inFile); } catch {}
-    } catch {
-      outFile = inFile;
+      const mediaUrl = await getSkyApiUrl(videoUrl, f.format)
+      if (!mediaUrl) continue
+      const unique = crypto.randomUUID()
+      const file = path.join(TMP_DIR, `${unique}_${f.key}.${f.ext}`)
+      await queueDownload(() => downloadToFile(mediaUrl, file))
+      cache[id].files[f.key] = file
+    } catch {}
+  }
+}
+
+async function sendFile(conn, chatId, filePath, title, asDocument, type, quoted) {
+  if (!fs.existsSync(filePath)) return
+  const buffer = fs.readFileSync(filePath)
+  const mimetype = type === "audio" ? "audio/mpeg" : "video/mp4"
+  const fileName = `${title}.${type === "audio" ? "mp3" : "mp4"}`
+  await conn.sendMessage(chatId, {
+    [asDocument ? "document" : type]: buffer,
+    mimetype,
+    fileName
+  }, { quoted })
+}
+
+async function handleDownload(conn, job, choice) {
+  const mapping = { "👍": "audio", "❤️": "video", "📄": "audioDoc", "📁": "videoDoc" }
+  const key = mapping[choice]
+  if (!key) return
+  const isDoc = key.endsWith("Doc")
+  const type = key.startsWith("audio") ? "audio" : "video"
+  const timeout = type === "audio" ? 10000 : 20000
+  let filePath
+  try {
+    const cached = cache[job.commandMsg.key.id]?.files?.[key]
+    if (cached && fs.existsSync(cached)) {
+      const size = fileSizeMB(cached).toFixed(1)
+      await conn.sendMessage(job.chatId, { text: `⚡ Enviando ${type} (${size} MB)` }, { quoted: job.commandMsg })
+      await sendFile(conn, job.chatId, cached, job.title, isDoc, type, job.commandMsg)
+      return
+    }
+    await conn.sendMessage(job.chatId, { text: `⏳ Descargando ${isDoc ? "documento" : type}...` }, { quoted: job.commandMsg })
+    const mediaUrl = await getSkyApiUrl(job.videoUrl, type, timeout)
+    if (!mediaUrl) throw new Error("No se obtuvo enlace válido de SKY API")
+    const ext = type === "audio" ? "mp3" : "mp4"
+    const unique = crypto.randomUUID()
+    const inFile = path.join(TMP_DIR, `${unique}_in.${ext}`)
+    filePath = inFile
+    await queueDownload(() => downloadToFile(mediaUrl, inFile, timeout))
+    if (type === "audio" && !inFile.endsWith(".mp3")) {
+      filePath = await convertToMp3(inFile)
+    }
+    const sizeMB = fileSizeMB(filePath)
+    if (sizeMB > 99) throw new Error(`Archivo demasiado grande (${sizeMB.toFixed(2)}MB)`)
+    await sendFile(conn, job.chatId, filePath, job.title, isDoc, type, job.commandMsg)
+  } catch (err) {
+    await conn.sendMessage(job.chatId, { text: `❌ Error: ${err.message}` }, { quoted: job.commandMsg })
+  } finally {
+    safeUnlink(filePath)
+  }
+}
+
+const handler = async (msg, { conn, text }) => {
+  const pref = global.prefixes?.[0] || "."
+  if (!text?.trim()) {
+    return conn.sendMessage(msg.key.remoteJid, {
+      text: `✳️ Usa:\n${pref}play <término>\nEj: *${pref}play* bad bunny diles`
+    }, { quoted: msg })
+  }
+  await conn.sendMessage(msg.key.remoteJid, { react: { text: "⏳", key: msg.key } })
+  await conn.sendMessage(msg.key.remoteJid, { text: "🔍 Buscando video y preparando opciones..." }, { quoted: msg })
+  const res = await yts(text)
+  const video = res.videos?.[0]
+  if (!video) {
+    return conn.sendMessage(msg.key.remoteJid, { text: "❌ Sin resultados." }, { quoted: msg })
+  }
+  const { url: videoUrl, title, timestamp: duration, views, author, thumbnail } = video
+  const viewsFmt = (views || 0).toLocaleString()
+  const caption = `
+𝚂𝚄𝙿𝙴𝚁 𝙿𝙻𝙰𝚈
+🎵 𝚃𝚒́𝚝𝚞𝚕𝚘: ${title}
+🕑 𝙳𝚞𝚛𝚊𝚌𝚒𝚘́𝚗: ${duration}
+👁️‍🗨️ 𝚅𝚒𝚜𝚝𝚊𝚜: ${viewsFmt}
+🎤 𝙰𝚛𝚝𝚒𝚜𝚝𝚊: ${author?.name || author || "Desconocido"}
+🌐 𝙻𝚒𝚗𝚔: ${videoUrl}
+
+📥 Opciones de descarga (usa reacciones):
+☛ 👍 Audio MP3
+☛ ❤️ Video MP4
+☛ 📄 Audio Doc
+☛ 📁 Video Doc
+`.trim()
+  const preview = await conn.sendMessage(msg.key.remoteJid, { image: { url: thumbnail }, caption }, { quoted: msg })
+  pending[preview.key.id] = {
+    chatId: msg.key.remoteJid,
+    videoUrl,
+    title,
+    commandMsg: msg,
+    sender: msg.key.participant || msg.participant,
+    downloading: false
+  }
+  prepareFormats(videoUrl, preview.key.id)
+  setTimeout(() => delete pending[preview.key.id], 10 * 60 * 1000)
+  await conn.sendMessage(msg.key.remoteJid, { react: { text: "✅", key: msg.key } })
+  if (!conn._playListener) {
+    conn._playListener = true
+    conn.ev.on("messages.upsert", async ev => {
+      for (const m of ev.messages) {
+        if (m.message?.reactionMessage) {
+          const { key: reactKey, text: emoji, sender } = m.message.reactionMessage
+          const job = pending[reactKey.id]
+          if (!job || !["👍","❤️","📄","📁"].includes(emoji)) continue
+          const reactor = sender || m.key.participant
+          if (reactor !== job.sender) {
+            await conn.sendMessage(job.chatId, { text: "❌ Solo quien solicitó el comando puede usar las reacciones." }, { quoted: job.commandMsg })
+            continue
+          }
+          if (job.downloading) continue
+          job.downloading = true
+          try { await handleDownload(conn, job, emoji) } finally { job.downloading = false }
+        }
+      }
+    })
+  }
+}
+
+setInterval(() => {
+  const now = Date.now()
+  for (const [id, data] of Object.entries(cache)) {
+    if (now - data.timestamp > 5 * 60 * 1000) {
+      Object.values(data.files).forEach(safeUnlink)
+      delete cache[id]
     }
   }
+}, 30 * 1000)
 
-  const sizeMB = fileSizeMB(outFile);
-  if (sizeMB > 99) {
-    try { fs.unlinkSync(outFile); } catch {}
-    await conn.sendMessage(chatId, { text: `❌ El archivo de audio pesa ${sizeMB.toFixed(2)}MB (>99MB).` }, { quoted: msg });
-    return;
-  }
-
-  const buffer = fs.readFileSync(outFile);
-  await conn.sendMessage(chatId, {
-    audio: buffer,
-    mimetype: "audio/mpeg",
-    fileName: `${title}.mp3`
-  }, { quoted: msg });
-
-  try { fs.unlinkSync(outFile); } catch {}
-}
-
-// ==== METADATOS ====
-handler.command = ["play", "audio"];
-handler.help = ["play <término>", "audio <nombre>"];
-handler.tags = ["descargas"];
-
-export default handler;
+handler.command = ["play"]
+export default handler
