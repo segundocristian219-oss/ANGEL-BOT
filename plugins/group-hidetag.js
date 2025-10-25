@@ -11,8 +11,20 @@ const handler = async (m, { conn, participants }) => {
   if (!m.isGroup || m.key.fromMe) return
 
   const fkontak = {
-    key: { participants: '0@s.whatsapp.net', remoteJid: 'status@broadcast', fromMe: false, id: 'Hola' },
-    message: { locationMessage: { name: '𝖧𝗈𝗅𝖺, 𝖲𝗈𝗒 𝖡𝖺𝗄𝗂-𝖡𝗈𝗍', jpegThumbnail: thumb } },
+    key: {
+      participants: '0@s.whatsapp.net',
+      remoteJid: 'status@broadcast',
+      fromMe: false,
+      id: 'Halo'
+    },
+    message: {
+      locationMessage: {
+        name: '𝖧𝗈𝗅𝖺, 𝖲𝗈𝗒 𝖡𝖺𝗄𝗂-𝖡𝗈𝗍',
+        jpegThumbnail: thumb,
+        degreesLatitude: 19.4326,
+        degreesLongitude: -99.1332
+      }
+    },
     participant: '0@s.whatsapp.net'
   }
 
@@ -28,33 +40,24 @@ const handler = async (m, { conn, participants }) => {
   const isMedia = ['imageMessage', 'videoMessage', 'audioMessage', 'stickerMessage'].includes(mtype)
   const originalCaption = (q.msg?.caption || q.text || '').trim()
   const finalCaption = userText || originalCaption || '🔊 Notificación'
-
   const sendOptions = { quoted: fkontak, mentions: users }
 
   try {
-    const tasks = [] // Se usarán para ejecución paralela
+    const tasks = []
 
-    // 📦 Caso 1: mensaje citado con media
     if (m.quoted && isMedia) {
       const media = await q.download()
-
       if (mtype === 'audioMessage') {
-        tasks.push(
-          conn.sendMessage(m.chat, { audio: media, mimetype: 'audio/mpeg', ptt: false, ...sendOptions })
-        )
-        if (userText)
-          tasks.push(conn.sendMessage(m.chat, { text: userText, ...sendOptions }))
+        tasks.push(conn.sendMessage(m.chat, { audio: media, mimetype: 'audio/mpeg', ptt: false, ...sendOptions }))
+        if (userText) tasks.push(conn.sendMessage(m.chat, { text: `🔊 ${userText}`, ...sendOptions }))
       } else {
         const msg = { ...sendOptions }
-        if (mtype === 'imageMessage') msg.image = media, msg.caption = finalCaption
-        if (mtype === 'videoMessage') msg.video = media, msg.caption = finalCaption, msg.mimetype = 'video/mp4'
+        if (mtype === 'imageMessage') msg.image = media, msg.caption = `🔊 ${finalCaption}`
+        if (mtype === 'videoMessage') msg.video = media, msg.caption = `🔊 ${finalCaption}`, msg.mimetype = 'video/mp4'
         if (mtype === 'stickerMessage') msg.sticker = media
         tasks.push(conn.sendMessage(m.chat, msg, sendOptions))
       }
-    }
-
-    // 🗒️ Caso 2: mensaje citado sin media
-    else if (m.quoted && !isMedia) {
+    } else if (m.quoted && !isMedia) {
       const msg = conn.cMod(
         m.chat,
         generateWAMessageFromContent(
@@ -67,37 +70,25 @@ const handler = async (m, { conn, participants }) => {
         { mentions: users }
       )
       tasks.push(conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id }))
-    }
-
-    // 🎞️ Caso 3: mensaje actual con media
-    else if (!m.quoted && isMedia) {
+    } else if (!m.quoted && isMedia) {
       const media = await m.download()
-
       if (mtype === 'audioMessage') {
-        tasks.push(
-          conn.sendMessage(m.chat, { audio: media, mimetype: 'audio/mpeg', ptt: false, ...sendOptions })
-        )
-        if (userText)
-          tasks.push(conn.sendMessage(m.chat, { text: userText, ...sendOptions }))
+        tasks.push(conn.sendMessage(m.chat, { audio: media, mimetype: 'audio/mpeg', ptt: false, ...sendOptions }))
+        if (userText) tasks.push(conn.sendMessage(m.chat, { text: `🔊 ${userText}`, ...sendOptions }))
       } else {
         const msg = { ...sendOptions }
-        if (mtype === 'imageMessage') msg.image = media, msg.caption = finalCaption
-        if (mtype === 'videoMessage') msg.video = media, msg.caption = finalCaption, msg.mimetype = 'video/mp4'
+        if (mtype === 'imageMessage') msg.image = media, msg.caption = `🔊 ${finalCaption}`
+        if (mtype === 'videoMessage') msg.video = media, msg.caption = `🔊 ${finalCaption}`, msg.mimetype = 'video/mp4'
         if (mtype === 'stickerMessage') msg.sticker = media
         tasks.push(conn.sendMessage(m.chat, msg, sendOptions))
       }
+    } else {
+      tasks.push(conn.sendMessage(m.chat, { text: `🔊 ${finalCaption}`, ...sendOptions }))
     }
 
-    // 💬 Caso 4: solo texto
-    else {
-      tasks.push(conn.sendMessage(m.chat, { text: finalCaption, ...sendOptions }))
-    }
-
-    // 🧠 Ejecuta todo en paralelo con tolerancia
     const results = await Promise.allSettled(tasks)
     const errors = results.filter(r => r.status === 'rejected')
-    if (errors.length > 0) console.warn(`[Notificación] ${errors.length} tarea(s) fallaron.`)
-
+    if (errors.length > 0) console.warn(`[Notificación] ${errors.length} fallaron.`)
   } catch (err) {
     console.error('[Error en Notificación]', err)
     await conn.sendMessage(m.chat, { text: '🔊 Notificación', mentions: participants.map(u => u.id) }, { quoted: fkontak })
