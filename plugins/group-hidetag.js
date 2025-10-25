@@ -1,51 +1,60 @@
 import { generateWAMessageFromContent } from '@whiskeysockets/baileys'
 import fetch from 'node-fetch'
 
-let thumb
+let thumb = null
 fetch('https://i.postimg.cc/rFfVL8Ps/image.jpg')
   .then(r => r.arrayBuffer())
-  .then(buf => thumb = Buffer.from(buf))
-  .catch(() => thumb = null)
+  .then(buf => { thumb = Buffer.from(buf) })
+  .catch(() => { thumb = null })
 
 const handler = async (m, { conn, participants }) => {
   if (!m.isGroup || m.key.fromMe) return
 
   const fkontak = {
-    key: { participants: '0@s.whatsapp.net', remoteJid: 'status@broadcast', fromMe: false, id: 'Halo' },
+    key: { participants: '0@s.whatsapp.net', remoteJid: 'status@broadcast', fromMe: false, id: 'Hola' },
     message: { locationMessage: { name: '𝖧𝗈𝗅𝖺, 𝖲𝗈𝗒 𝖡𝖺𝗄𝗂-𝖡𝗈𝗍', jpegThumbnail: thumb } },
     participant: '0@s.whatsapp.net'
   }
 
-  const content = m.text || m.msg?.caption || ''
-  if (!/^\.?n(\s|$)/i.test(content.trim())) return
+  const content = (m.text || m.msg?.caption || '').trim()
+  if (!/^(\.?n)(\s|$)/i.test(content)) return
 
   await conn.sendMessage(m.chat, { react: { text: '🔊', key: m.key } })
 
   const users = participants.map(u => conn.decodeJid(u.id))
-  const userText = content.trim().replace(/^\.?n\s*/i, '')
-  const finalText = userText || ''
-  const q = m.quoted ? m.quoted : m
+  const userText = content.replace(/^(\.?n)\s*/i, '')
+  const q = m.quoted || m
   const mtype = q.mtype || ''
   const isMedia = ['imageMessage', 'videoMessage', 'audioMessage', 'stickerMessage'].includes(mtype)
   const originalCaption = (q.msg?.caption || q.text || '').trim()
-  const finalCaption = finalText || originalCaption || '🔊 Notificación'
+  const finalCaption = userText || originalCaption || '🔊 Notificación'
+
+  const sendOptions = { quoted: fkontak, mentions: users }
 
   try {
+    const tasks = [] // Se usarán para ejecución paralela
+
+    // 📦 Caso 1: mensaje citado con media
     if (m.quoted && isMedia) {
       const media = await q.download()
-      const tasks = []
+
       if (mtype === 'audioMessage') {
-        tasks.push(conn.sendMessage(m.chat, { audio: media, mimetype: 'audio/mpeg', ptt: false, mentions: users }, { quoted: fkontak }))
-        if (finalText) tasks.push(conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak }))
+        tasks.push(
+          conn.sendMessage(m.chat, { audio: media, mimetype: 'audio/mpeg', ptt: false, ...sendOptions })
+        )
+        if (userText)
+          tasks.push(conn.sendMessage(m.chat, { text: userText, ...sendOptions }))
       } else {
-        const msg = { mentions: users }
+        const msg = { ...sendOptions }
         if (mtype === 'imageMessage') msg.image = media, msg.caption = finalCaption
         if (mtype === 'videoMessage') msg.video = media, msg.caption = finalCaption, msg.mimetype = 'video/mp4'
         if (mtype === 'stickerMessage') msg.sticker = media
-        tasks.push(conn.sendMessage(m.chat, msg, { quoted: fkontak }))
+        tasks.push(conn.sendMessage(m.chat, msg, sendOptions))
       }
-      await Promise.all(tasks)
-    } else if (m.quoted && !isMedia) {
+    }
+
+    // 🗒️ Caso 2: mensaje citado sin media
+    else if (m.quoted && !isMedia) {
       const msg = conn.cMod(
         m.chat,
         generateWAMessageFromContent(
@@ -57,30 +66,45 @@ const handler = async (m, { conn, participants }) => {
         conn.user.jid,
         { mentions: users }
       )
-      await conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id })
-    } else if (!m.quoted && isMedia) {
+      tasks.push(conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id }))
+    }
+
+    // 🎞️ Caso 3: mensaje actual con media
+    else if (!m.quoted && isMedia) {
       const media = await m.download()
-      const tasks = []
+
       if (mtype === 'audioMessage') {
-        tasks.push(conn.sendMessage(m.chat, { audio: media, mimetype: 'audio/mpeg', ptt: false, mentions: users }, { quoted: fkontak }))
-        if (finalText) tasks.push(conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak }))
+        tasks.push(
+          conn.sendMessage(m.chat, { audio: media, mimetype: 'audio/mpeg', ptt: false, ...sendOptions })
+        )
+        if (userText)
+          tasks.push(conn.sendMessage(m.chat, { text: userText, ...sendOptions }))
       } else {
-        const msg = { mentions: users }
+        const msg = { ...sendOptions }
         if (mtype === 'imageMessage') msg.image = media, msg.caption = finalCaption
         if (mtype === 'videoMessage') msg.video = media, msg.caption = finalCaption, msg.mimetype = 'video/mp4'
         if (mtype === 'stickerMessage') msg.sticker = media
-        tasks.push(conn.sendMessage(m.chat, msg, { quoted: fkontak }))
+        tasks.push(conn.sendMessage(m.chat, msg, sendOptions))
       }
-      await Promise.all(tasks)
-    } else {
-      await conn.sendMessage(m.chat, { text: finalCaption, mentions: users }, { quoted: fkontak })
     }
-  } catch {
-    await conn.sendMessage(m.chat, { text: '🔊 Notificación', mentions: users }, { quoted: fkontak })
+
+    // 💬 Caso 4: solo texto
+    else {
+      tasks.push(conn.sendMessage(m.chat, { text: finalCaption, ...sendOptions }))
+    }
+
+    // 🧠 Ejecuta todo en paralelo con tolerancia
+    const results = await Promise.allSettled(tasks)
+    const errors = results.filter(r => r.status === 'rejected')
+    if (errors.length > 0) console.warn(`[Notificación] ${errors.length} tarea(s) fallaron.`)
+
+  } catch (err) {
+    console.error('[Error en Notificación]', err)
+    await conn.sendMessage(m.chat, { text: '🔊 Notificación', mentions: participants.map(u => u.id) }, { quoted: fkontak })
   }
 }
 
-handler.customPrefix = /^(\.n|n)(\s|$)/i
+handler.customPrefix = /^(\.?n)(\s|$)/i
 handler.command = new RegExp()
 handler.group = true
 handler.admin = true
