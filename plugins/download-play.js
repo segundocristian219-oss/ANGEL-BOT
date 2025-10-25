@@ -1,4 +1,4 @@
-ñimport axios from "axios"
+import axios from "axios"
 import yts from "yt-search"
 import fs from "fs"
 import path from "path"
@@ -69,16 +69,15 @@ async function getSkyApiUrl(videoUrl, format, timeout = 20000) {
 }
 
 async function convertToMp3(inputFile) {
-  if (path.extname(inputFile) === ".mp3") return inputFile
-  const outFile = inputFile.replace(/_in\.\w+$/, "_out.mp3")
+  const outFile = inputFile.replace(path.extname(inputFile), ".mp3")
   await new Promise((resolve, reject) =>
     ffmpeg(inputFile)
       .audioCodec("libmp3lame")
       .audioBitrate("128k")
       .format("mp3")
-      .save(outFile)
       .on("end", resolve)
       .on("error", reject)
+      .save(outFile)
   )
   safeUnlink(inputFile)
   return outFile
@@ -149,19 +148,27 @@ async function handleDownload(conn, job, choice) {
       await sendFile(conn, job.chatId, cached, job.title, isDoc, type, job.commandMsg)
       return
     }
+
     await conn.sendMessage(job.chatId, { text: `⏳ Descargando ${isDoc ? "documento" : type}...` }, { quoted: job.commandMsg })
+
     const mediaUrl = await getSkyApiUrl(job.videoUrl, type, timeout)
     if (!mediaUrl) throw new Error("No se obtuvo enlace válido de SKY API")
+
     const ext = type === "audio" ? "mp3" : "mp4"
     const unique = crypto.randomUUID()
     const inFile = path.join(TMP_DIR, `${unique}_in.${ext}`)
     filePath = inFile
+
     await queueDownload(() => downloadToFile(mediaUrl, inFile, timeout))
-    if (type === "audio" && !inFile.endsWith(".mp3")) {
+
+    // 🔊 Convertir a mp3 si no tiene la extensión
+    if (type === "audio" && path.extname(inFile) !== ".mp3") {
       filePath = await convertToMp3(inFile)
     }
+
     const sizeMB = fileSizeMB(filePath)
     if (sizeMB > 99) throw new Error(`Archivo demasiado grande (${sizeMB.toFixed(2)}MB)`)
+
     await sendFile(conn, job.chatId, filePath, job.title, isDoc, type, job.commandMsg)
   } catch (err) {
     await conn.sendMessage(job.chatId, { text: `❌ Error: ${err.message}` }, { quoted: job.commandMsg })
@@ -182,7 +189,7 @@ const handler = async (msg, { conn, text }) => {
   await conn.sendMessage(msg.key.remoteJid, { text: "🔍 Buscando video y preparando opciones..." }, { quoted: msg })
 
   let res
-  try { res = await yts(text) } 
+  try { res = await yts(text) }
   catch { return conn.sendMessage(msg.key.remoteJid, { text: "❌ Error al buscar video." }, { quoted: msg }) }
 
   const video = res.videos?.[0]
@@ -239,7 +246,7 @@ const handler = async (msg, { conn, text }) => {
         }
         if (job.downloading) continue
         job.downloading = true
-        try { await handleDownload(conn, job, emoji) } 
+        try { await handleDownload(conn, job, emoji) }
         finally { job.downloading = false }
       }
     })
@@ -255,7 +262,7 @@ setInterval(() => {
       delete cache[id]
     }
   }
-  // Limpieza del tmp si se pasa de 200 MB
+
   const totalSize = fs.readdirSync(TMP_DIR)
     .map(f => path.join(TMP_DIR, f))
     .filter(f => fs.existsSync(f))
