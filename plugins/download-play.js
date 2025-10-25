@@ -1,4 +1,4 @@
-import axios from "axios"
+ñimport axios from "axios"
 import yts from "yt-search"
 import fs from "fs"
 import path from "path"
@@ -69,6 +69,7 @@ async function getSkyApiUrl(videoUrl, format, timeout = 20000) {
 }
 
 async function convertToMp3(inputFile) {
+  if (path.extname(inputFile) === ".mp3") return inputFile
   const outFile = inputFile.replace(/_in\.\w+$/, "_out.mp3")
   await new Promise((resolve, reject) =>
     ffmpeg(inputFile)
@@ -138,7 +139,7 @@ async function handleDownload(conn, job, choice) {
   if (!key) return
   const isDoc = key.endsWith("Doc")
   const type = key.startsWith("audio") ? "audio" : "video"
-  const timeout = type === "audio" ? 10000 : 20000
+  const timeout = type === "audio" ? 20000 : 40000
   let filePath
   try {
     const cached = cache[job.commandMsg.key.id]?.files?.[key]
@@ -176,13 +177,19 @@ const handler = async (msg, { conn, text }) => {
       text: `✳️ Usa:\n${pref}play <término>\nEj: *${pref}play* bad bunny diles`
     }, { quoted: msg })
   }
+
   await conn.sendMessage(msg.key.remoteJid, { react: { text: "⏳", key: msg.key } })
   await conn.sendMessage(msg.key.remoteJid, { text: "🔍 Buscando video y preparando opciones..." }, { quoted: msg })
-  const res = await yts(text)
+
+  let res
+  try { res = await yts(text) } 
+  catch { return conn.sendMessage(msg.key.remoteJid, { text: "❌ Error al buscar video." }, { quoted: msg }) }
+
   const video = res.videos?.[0]
   if (!video) {
     return conn.sendMessage(msg.key.remoteJid, { text: "❌ Sin resultados." }, { quoted: msg })
   }
+
   const { url: videoUrl, title, timestamp: duration, views, author, thumbnail } = video
   const viewsFmt = (views || 0).toLocaleString()
   const caption = `
@@ -199,7 +206,9 @@ const handler = async (msg, { conn, text }) => {
 ☛ 📄 Audio Doc
 ☛ 📁 Video Doc
 `.trim()
+
   const preview = await conn.sendMessage(msg.key.remoteJid, { image: { url: thumbnail }, caption }, { quoted: msg })
+
   pending[preview.key.id] = {
     chatId: msg.key.remoteJid,
     videoUrl,
@@ -208,40 +217,53 @@ const handler = async (msg, { conn, text }) => {
     sender: msg.key.participant || msg.participant,
     downloading: false
   }
+
   prepareFormats(videoUrl, preview.key.id)
   setTimeout(() => delete pending[preview.key.id], 10 * 60 * 1000)
+
   await conn.sendMessage(msg.key.remoteJid, { react: { text: "✅", key: msg.key } })
-  if (!conn._playListener) {
-    conn._playListener = true
+
+  if (!conn._listeners) conn._listeners = {}
+  if (!conn._listeners.play) {
+    conn._listeners.play = true
     conn.ev.on("messages.upsert", async ev => {
-      for (const m of ev.messages) {
-        if (m.message?.reactionMessage) {
-          const { key: reactKey, text: emoji, sender } = m.message.reactionMessage
-          const job = pending[reactKey.id]
-          if (!job || !["👍","❤️","📄","📁"].includes(emoji)) continue
-          const reactor = sender || m.key.participant
-          if (reactor !== job.sender) {
-            await conn.sendMessage(job.chatId, { text: "❌ Solo quien solicitó el comando puede usar las reacciones." }, { quoted: job.commandMsg })
-            continue
-          }
-          if (job.downloading) continue
-          job.downloading = true
-          try { await handleDownload(conn, job, emoji) } finally { job.downloading = false }
+      for (const m of ev.messages || []) {
+        const react = m.message?.reactionMessage
+        if (!react) continue
+        const { key: reactKey, text: emoji, sender } = react
+        const job = pending[reactKey?.id]
+        if (!job || !["👍","❤️","📄","📁"].includes(emoji)) continue
+        if ((sender || m.key.participant) !== job.sender) {
+          await conn.sendMessage(job.chatId, { text: "❌ Solo quien solicitó el comando puede usar las reacciones." }, { quoted: job.commandMsg })
+          continue
         }
+        if (job.downloading) continue
+        job.downloading = true
+        try { await handleDownload(conn, job, emoji) } 
+        finally { job.downloading = false }
       }
     })
   }
 }
 
+// Limpieza automática avanzada
 setInterval(() => {
   const now = Date.now()
   for (const [id, data] of Object.entries(cache)) {
     if (now - data.timestamp > 5 * 60 * 1000) {
-      Object.values(data.files).forEach(safeUnlink)
+      for (const f of Object.values(data.files)) safeUnlink(f)
       delete cache[id]
     }
   }
-}, 30 * 1000)
+  // Limpieza del tmp si se pasa de 200 MB
+  const totalSize = fs.readdirSync(TMP_DIR)
+    .map(f => path.join(TMP_DIR, f))
+    .filter(f => fs.existsSync(f))
+    .reduce((acc, f) => acc + fs.statSync(f).size, 0) / (1024 * 1024)
+  if (totalSize > 200) {
+    for (const f of fs.readdirSync(TMP_DIR)) safeUnlink(path.join(TMP_DIR, f))
+  }
+}, 60 * 1000)
 
 handler.command = ["play"]
 export default handler
