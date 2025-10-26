@@ -125,26 +125,15 @@ async function prepareFormats(videoUrl, id) {
 
   cache[id] = { timestamp: Date.now(), files: {} }
 
-  try {
-    await Promise.all(groups[0].map(async f => {
+  for (const group of groups) {
+    await Promise.all(group.map(async f => {
       const mediaUrl = await getSkyApiUrl(videoUrl, f.format)
       if (!mediaUrl) return
       const unique = crypto.randomUUID()
       const file = path.join(TMP_DIR, `${unique}_${f.key}.${f.ext}`)
-      await queueDownload(() => downloadToFile(mediaUrl, file))
+      await queueTypeDownload(f.key.startsWith("audio") ? "audio" : "video", async () => downloadToFile(mediaUrl, file))
       cache[id].files[f.key] = file
     }))
-  } catch {}
-
-  for (const f of groups[1]) {
-    try {
-      const mediaUrl = await getSkyApiUrl(videoUrl, f.format)
-      if (!mediaUrl) continue
-      const unique = crypto.randomUUID()
-      const file = path.join(TMP_DIR, `${unique}_${f.key}.${f.ext}`)
-      await queueDownload(() => downloadToFile(mediaUrl, file))
-      cache[id].files[f.key] = file
-    } catch {}
   }
 }
 
@@ -166,7 +155,6 @@ async function handleDownload(conn, job, choice) {
   if (!key) return
   const isDoc = key.endsWith("Doc")
   const type = key.startsWith("audio") ? "audio" : "video"
-  const timeout = type === "audio" ? 10000 : 20000
   let filePath
   try {
     const cached = cache[job.commandMsg.key.id]?.files?.[key]
@@ -177,20 +165,14 @@ async function handleDownload(conn, job, choice) {
       return
     }
     await conn.sendMessage(job.chatId, { text: `⏳ Descargando ${isDoc ? "documento" : type}...` }, { quoted: job.commandMsg })
-    const mediaUrl = await getSkyApiUrl(job.videoUrl, type, timeout)
+    const mediaUrl = await getSkyApiUrl(job.videoUrl, type)
     if (!mediaUrl) throw new Error("No se obtuvo enlace válido de SKY API")
     const ext = type === "audio" ? "mp3" : "mp4"
     const unique = crypto.randomUUID()
     const inFile = path.join(TMP_DIR, `${unique}_in.${ext}`)
     filePath = inFile
-    await queueTypeDownload(type, async () => {
-      await downloadToFile(mediaUrl, inFile, timeout)
-    })
-    if (type === "audio" && !inFile.endsWith(".mp3")) {
-      filePath = await convertToMp3(inFile)
-    }
-    const sizeMB = fileSizeMB(filePath)
-    if (sizeMB > 99) throw new Error(`Archivo demasiado grande (${sizeMB.toFixed(2)}MB)`)
+    await queueTypeDownload(type, async () => downloadToFile(mediaUrl, inFile))
+    if (type === "audio" && !inFile.endsWith(".mp3")) filePath = await convertToMp3(inFile)
     await sendFile(conn, job.chatId, filePath, job.title, isDoc, type, job.commandMsg)
   } catch (err) {
     await conn.sendMessage(job.chatId, { text: `❌ Error: ${err.message}` }, { quoted: job.commandMsg })
@@ -201,18 +183,13 @@ async function handleDownload(conn, job, choice) {
 
 const handler = async (msg, { conn, text }) => {
   const pref = global.prefixes?.[0] || "."
-  if (!text?.trim()) {
-    return conn.sendMessage(msg.key.remoteJid, {
-      text: `✳️ Usa:\n${pref}play <término>\nEj: *${pref}play* bad bunny diles`
-    }, { quoted: msg })
-  }
+  if (!text?.trim()) return conn.sendMessage(msg.key.remoteJid, { text: `✳️ Usa:\n${pref}play <término>` }, { quoted: msg })
+
   await conn.sendMessage(msg.key.remoteJid, { react: { text: "⏳", key: msg.key } })
-  await conn.sendMessage(msg.key.remoteJid, { text: "🔍 Buscando video y preparando opciones..." }, { quoted: msg })
   const res = await yts(text)
   const video = res.videos?.[0]
-  if (!video) {
-    return conn.sendMessage(msg.key.remoteJid, { text: "❌ Sin resultados." }, { quoted: msg })
-  }
+  if (!video) return conn.sendMessage(msg.key.remoteJid, { text: "❌ Sin resultados." }, { quoted: msg })
+  
   const { url: videoUrl, title, timestamp: duration, views, author, thumbnail } = video
   const viewsFmt = (views || 0).toLocaleString()
   const caption = `
@@ -229,13 +206,10 @@ const handler = async (msg, { conn, text }) => {
 ☛ 📄 Audio Doc
 ☛ 📁 Video Doc
 `.trim()
+  
   const preview = await conn.sendMessage(msg.key.remoteJid, { image: { url: thumbnail }, caption }, { quoted: msg })
+
   pending[preview.key.id] = {
-    chatId: msg.key.remoteJid,
-    videoUrl,
-    title,
-    commandMsg
-pending[preview.key.id] = {
     chatId: msg.key.remoteJid,
     videoUrl,
     title,
@@ -243,26 +217,26 @@ pending[preview.key.id] = {
     sender: msg.key.participant || msg.participant,
     downloading: false
   }
+
   prepareFormats(videoUrl, preview.key.id)
   setTimeout(() => delete pending[preview.key.id], 20 * 24 * 60 * 60 * 1000)
-  await conn.sendMessage(msg.key.remoteJid, { react: { text: "✅", key: msg.key } })
+
   if (!conn._playListener) {
     conn._playListener = true
     conn.ev.on("messages.upsert", async ev => {
       for (const m of ev.messages) {
-        if (m.message?.reactionMessage) {
-          const { key: reactKey, text: emoji, sender } = m.message.reactionMessage
-          const job = pending[reactKey.id]
-          if (!job || !["👍","❤️","📄","📁"].includes(emoji)) continue
-          const reactor = sender || m.key.participant
-          if (reactor !== job.sender) {
-            await conn.sendMessage(job.chatId, { text: "❌ Solo quien solicitó el comando puede usar las reacciones." }, { quoted: job.commandMsg })
-            continue
-          }
-          if (job.downloading) continue
-          job.downloading = true
-          try { await handleDownload(conn, job, emoji) } finally { job.downloading = false }
+        if (!m.message?.reactionMessage) continue
+        const { key: reactKey, text: emoji, sender } = m.message.reactionMessage
+        const job = pending[reactKey.id]
+        if (!job || !["👍","❤️","📄","📁"].includes(emoji)) continue
+        const reactor = sender || m.key.participant
+        if (reactor !== job.sender) {
+          await conn.sendMessage(job.chatId, { text: "❌ Solo quien solicitó el comando puede usar las reacciones." }, { quoted: job.commandMsg })
+          continue
         }
+        if (job.downloading) continue
+        job.downloading = true
+        try { await handleDownload(conn, job, emoji) } finally { job.downloading = false }
       }
     })
   }
