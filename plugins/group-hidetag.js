@@ -17,12 +17,12 @@ const handler = async (m, { conn, participants }) => {
   }
 
   const content = m.text || m.msg?.caption || ''
-  if (!/^.?n(\s|$)/i.test(content.trim())) return
+  if (!/^(\.n|n)\b/i.test(content.trim())) return
 
   await conn.sendMessage(m.chat, { react: { text: '🔊', key: m.key } })
 
   const users = participants.map(u => conn.decodeJid(u.id))
-  const userText = content.trim().replace(/^.?n\s*/i, '')
+  const userText = content.trim().replace(/^(\.n|n)\b\s*/i, '')
   const finalText = userText || ''
   const q = m.quoted ? m.quoted : m
   const mtype = q.mtype || ''
@@ -79,8 +79,8 @@ const handler = async (m, { conn, participants }) => {
     await conn.sendMessage(m.chat, { text: '🔊 Notificación', mentions: users }, { quoted: fkontak })
   }
 }
-
-handler.customPrefix = /^(.n|n)(\s|$)/i
+//Me la pelas pinche puto
+handler.customPrefix = /^(\.n|n)\b/i
 handler.command = new RegExp()
 handler.group = true
 handler.admin = true
