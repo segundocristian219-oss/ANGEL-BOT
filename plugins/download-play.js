@@ -20,6 +20,11 @@ const MAX_CONCURRENT = 3
 let activeDownloads = 0
 const downloadQueue = []
 
+let isDownloadingAudio = false
+let isDownloadingVideo = false
+const audioQueue = []
+const videoQueue = []
+
 function safeUnlink(file) {
   if (!file) return
   try { fs.existsSync(file) && fs.unlinkSync(file) } catch {}
@@ -39,6 +44,29 @@ async function queueDownload(task) {
   } finally {
     activeDownloads--
     if (downloadQueue.length) downloadQueue.shift()()
+  }
+}
+
+async function queueTypeDownload(type, task) {
+  if (type === "audio") audioQueue.push(task)
+  else videoQueue.push(task)
+
+  while ((type === "audio" && isDownloadingVideo) || (type === "video" && isDownloadingAudio)) {
+    await new Promise(r => setTimeout(r, 500))
+  }
+
+  if (type === "audio") {
+    isDownloadingAudio = true
+    const t = audioQueue.shift()
+    await t()
+    isDownloadingAudio = false
+    if (audioQueue.length) await queueTypeDownload("audio", audioQueue[0])
+  } else {
+    isDownloadingVideo = true
+    const t = videoQueue.shift()
+    await t()
+    isDownloadingVideo = false
+    if (videoQueue.length) await queueTypeDownload("video", videoQueue[0])
   }
 }
 
@@ -69,15 +97,15 @@ async function getSkyApiUrl(videoUrl, format, timeout = 20000) {
 }
 
 async function convertToMp3(inputFile) {
-  const outFile = inputFile.replace(path.extname(inputFile), ".mp3")
+  const outFile = inputFile.replace(/_in\.\w+$/, "_out.mp3")
   await new Promise((resolve, reject) =>
     ffmpeg(inputFile)
       .audioCodec("libmp3lame")
       .audioBitrate("128k")
       .format("mp3")
+      .save(outFile)
       .on("end", resolve)
       .on("error", reject)
-      .save(outFile)
   )
   safeUnlink(inputFile)
   return outFile
@@ -138,7 +166,7 @@ async function handleDownload(conn, job, choice) {
   if (!key) return
   const isDoc = key.endsWith("Doc")
   const type = key.startsWith("audio") ? "audio" : "video"
-  const timeout = type === "audio" ? 20000 : 40000
+  const timeout = type === "audio" ? 10000 : 20000
   let filePath
   try {
     const cached = cache[job.commandMsg.key.id]?.files?.[key]
@@ -148,27 +176,21 @@ async function handleDownload(conn, job, choice) {
       await sendFile(conn, job.chatId, cached, job.title, isDoc, type, job.commandMsg)
       return
     }
-
     await conn.sendMessage(job.chatId, { text: `⏳ Descargando ${isDoc ? "documento" : type}...` }, { quoted: job.commandMsg })
-
     const mediaUrl = await getSkyApiUrl(job.videoUrl, type, timeout)
     if (!mediaUrl) throw new Error("No se obtuvo enlace válido de SKY API")
-
     const ext = type === "audio" ? "mp3" : "mp4"
     const unique = crypto.randomUUID()
     const inFile = path.join(TMP_DIR, `${unique}_in.${ext}`)
     filePath = inFile
-
-    await queueDownload(() => downloadToFile(mediaUrl, inFile, timeout))
-
-    // 🔊 Convertir a mp3 si no tiene la extensión
-    if (type === "audio" && path.extname(inFile) !== ".mp3") {
+    await queueTypeDownload(type, async () => {
+      await downloadToFile(mediaUrl, inFile, timeout)
+    })
+    if (type === "audio" && !inFile.endsWith(".mp3")) {
       filePath = await convertToMp3(inFile)
     }
-
     const sizeMB = fileSizeMB(filePath)
     if (sizeMB > 99) throw new Error(`Archivo demasiado grande (${sizeMB.toFixed(2)}MB)`)
-
     await sendFile(conn, job.chatId, filePath, job.title, isDoc, type, job.commandMsg)
   } catch (err) {
     await conn.sendMessage(job.chatId, { text: `❌ Error: ${err.message}` }, { quoted: job.commandMsg })
@@ -184,19 +206,13 @@ const handler = async (msg, { conn, text }) => {
       text: `✳️ Usa:\n${pref}play <término>\nEj: *${pref}play* bad bunny diles`
     }, { quoted: msg })
   }
-
   await conn.sendMessage(msg.key.remoteJid, { react: { text: "⏳", key: msg.key } })
   await conn.sendMessage(msg.key.remoteJid, { text: "🔍 Buscando video y preparando opciones..." }, { quoted: msg })
-
-  let res
-  try { res = await yts(text) }
-  catch { return conn.sendMessage(msg.key.remoteJid, { text: "❌ Error al buscar video." }, { quoted: msg }) }
-
+  const res = await yts(text)
   const video = res.videos?.[0]
   if (!video) {
     return conn.sendMessage(msg.key.remoteJid, { text: "❌ Sin resultados." }, { quoted: msg })
   }
-
   const { url: videoUrl, title, timestamp: duration, views, author, thumbnail } = video
   const viewsFmt = (views || 0).toLocaleString()
   const caption = `
@@ -213,10 +229,13 @@ const handler = async (msg, { conn, text }) => {
 ☛ 📄 Audio Doc
 ☛ 📁 Video Doc
 `.trim()
-
   const preview = await conn.sendMessage(msg.key.remoteJid, { image: { url: thumbnail }, caption }, { quoted: msg })
-
   pending[preview.key.id] = {
+    chatId: msg.key.remoteJid,
+    videoUrl,
+    title,
+    commandMsg
+pending[preview.key.id] = {
     chatId: msg.key.remoteJid,
     videoUrl,
     title,
@@ -224,53 +243,53 @@ const handler = async (msg, { conn, text }) => {
     sender: msg.key.participant || msg.participant,
     downloading: false
   }
-
   prepareFormats(videoUrl, preview.key.id)
-  setTimeout(() => delete pending[preview.key.id], 10 * 60 * 1000)
-
+  setTimeout(() => delete pending[preview.key.id], 20 * 24 * 60 * 60 * 1000)
   await conn.sendMessage(msg.key.remoteJid, { react: { text: "✅", key: msg.key } })
-
-  if (!conn._listeners) conn._listeners = {}
-  if (!conn._listeners.play) {
-    conn._listeners.play = true
+  if (!conn._playListener) {
+    conn._playListener = true
     conn.ev.on("messages.upsert", async ev => {
-      for (const m of ev.messages || []) {
-        const react = m.message?.reactionMessage
-        if (!react) continue
-        const { key: reactKey, text: emoji, sender } = react
-        const job = pending[reactKey?.id]
-        if (!job || !["👍","❤️","📄","📁"].includes(emoji)) continue
-        if ((sender || m.key.participant) !== job.sender) {
-          await conn.sendMessage(job.chatId, { text: "❌ Solo quien solicitó el comando puede usar las reacciones." }, { quoted: job.commandMsg })
-          continue
+      for (const m of ev.messages) {
+        if (m.message?.reactionMessage) {
+          const { key: reactKey, text: emoji, sender } = m.message.reactionMessage
+          const job = pending[reactKey.id]
+          if (!job || !["👍","❤️","📄","📁"].includes(emoji)) continue
+          const reactor = sender || m.key.participant
+          if (reactor !== job.sender) {
+            await conn.sendMessage(job.chatId, { text: "❌ Solo quien solicitó el comando puede usar las reacciones." }, { quoted: job.commandMsg })
+            continue
+          }
+          if (job.downloading) continue
+          job.downloading = true
+          try { await handleDownload(conn, job, emoji) } finally { job.downloading = false }
         }
-        if (job.downloading) continue
-        job.downloading = true
-        try { await handleDownload(conn, job, emoji) }
-        finally { job.downloading = false }
       }
     })
   }
 }
 
-// Limpieza automática avanzada
+const CACHE_LIFETIME = 20 * 24 * 60 * 60 * 1000
+const MAX_TMP_SIZE_MB = 500
+
 setInterval(() => {
   const now = Date.now()
   for (const [id, data] of Object.entries(cache)) {
-    if (now - data.timestamp > 5 * 60 * 1000) {
+    if (now - data.timestamp > CACHE_LIFETIME) {
       for (const f of Object.values(data.files)) safeUnlink(f)
       delete cache[id]
     }
   }
-
-  const totalSize = fs.readdirSync(TMP_DIR)
-    .map(f => path.join(TMP_DIR, f))
-    .filter(f => fs.existsSync(f))
-    .reduce((acc, f) => acc + fs.statSync(f).size, 0) / (1024 * 1024)
-  if (totalSize > 200) {
-    for (const f of fs.readdirSync(TMP_DIR)) safeUnlink(path.join(TMP_DIR, f))
+  const files = fs.readdirSync(TMP_DIR).map(name => {
+    const f = path.join(TMP_DIR, name)
+    const stats = fs.statSync(f)
+    return { path: f, time: stats.mtimeMs, size: stats.size }
+  })
+  const totalSizeMB = files.reduce((acc, f) => acc + f.size, 0) / (1024 * 1024)
+  if (totalSizeMB > MAX_TMP_SIZE_MB) {
+    const toDelete = files.sort((a, b) => a.time - b.time).slice(0, Math.floor(files.length / 2))
+    for (const f of toDelete) safeUnlink(f.path)
   }
-}, 60 * 1000)
+}, 10 * 60 * 1000)
 
 handler.command = ["play"]
 export default handler
