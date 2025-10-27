@@ -59,10 +59,6 @@ async function wait(ms) {
 async function getSkyApiUrl(videoUrl, format, timeout = 20000, retries = 1) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      if (format === "video") {
-        const url = `https://ends.apiadonix.space/download/ytmp4?apikey=AdonixKeybsh75y4198&url=${encodeURIComponent(videoUrl)}`
-        return url
-      }
       const { data } = await axios.get(`${SKY_BASE}/api/download/yt.php`, {
         params: { url: videoUrl, format },
         headers: { Authorization: `Bearer ${SKY_KEY}` },
