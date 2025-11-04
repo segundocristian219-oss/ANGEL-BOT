@@ -58,4 +58,4 @@ handler.tags = ['group']
 handler.command = /^(verfantasmas|fantasmas|sider|fankick)$/i
 handler.admin = true
 
-export { messageHandler, handler }
+export { default, handler }
