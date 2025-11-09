@@ -1,4 +1,3 @@
-import { generateWAMessageFromContent } from '@whiskeysockets/baileys'
 import fetch from 'node-fetch'
 
 let thumb
@@ -23,22 +22,40 @@ const handler = async (m, { conn, participants }) => {
 
   const users = participants.map(u => conn.decodeJid(u.id))
   const userText = content.trim().replace(/^(\.n|n)\b\s*/i, '')
-  const finalText = userText || ''
-  const q = m.quoted ? m.quoted : m
-  const hasQuoted = !!m.quoted
+  const finalText = userText || '🔊 Notificación'
+
+  const q = m.quoted ? m.quoted : null
+  const mtype = q?.mtype || ''
+  const isMedia = ['imageMessage', 'videoMessage', 'audioMessage', 'stickerMessage', 'documentMessage'].includes(mtype)
 
   try {
-    if (hasQuoted) {
-      await conn.copyNForward(m.chat, q, true, { quoted: fkontak, mentions: users })
-      if (finalText) {
-        await conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak })
+    if (q && q.message) {
+      let success = true
+      try {
+        await conn.copyNForward(m.chat, q, true, { quoted: fkontak, mentions: users })
+      } catch {
+        success = false
+      }
+
+      if (!success && isMedia) {
+        const media = await q.download()
+        const msg = { mentions: users }
+        if (mtype === 'stickerMessage') msg.sticker = media
+        if (mtype === 'imageMessage') msg.image = media, msg.caption = finalText
+        if (mtype === 'videoMessage') msg.video = media, msg.caption = finalText
+        if (mtype === 'audioMessage') msg.audio = media, msg.mimetype = 'audio/mpeg', msg.ptt = false
+        if (mtype === 'documentMessage') msg.document = media, msg.fileName = q.msg.fileName || 'file'
+        await conn.sendMessage(m.chat, msg, { quoted: fkontak })
+      } else if (finalText && finalText !== '🔊 Notificación') {
+        if (mtype !== 'imageMessage' && mtype !== 'videoMessage') {
+          await conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak })
+        }
       }
     } else {
-      const textToSend = finalText || '🔊 Notificación'
-      await conn.sendMessage(m.chat, { text: textToSend, mentions: users }, { quoted: fkontak })
+      await conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak })
     }
   } catch {
-    await conn.sendMessage(m.chat, { text: '🔊 Notificación', mentions: users }, { quoted: fkontak })
+    await conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak })
   }
 }
 
