@@ -1,67 +1,86 @@
+import { generateWAMessageFromContent } from '@whiskeysockets/baileys'
 import fetch from 'node-fetch'
 
 let thumb
 fetch('https://i.postimg.cc/rFfVL8Ps/image.jpg')
-  .then(r => r.arrayBuffer())
-  .then(buf => thumb = Buffer.from(buf))
-  .catch(() => thumb = null)
+.then(r => r.arrayBuffer())
+.then(buf => thumb = Buffer.from(buf))
+.catch(() => thumb = null)
 
 const handler = async (m, { conn, participants }) => {
-  if (!m.isGroup || m.key.fromMe) return
+if (!m.isGroup || m.key.fromMe) return
 
-  const fkontak = {
-    key: { participants: '0@s.whatsapp.net', remoteJid: 'status@broadcast', fromMe: false, id: 'Halo' },
-    message: { locationMessage: { name: '𝖧𝗈𝗅𝖺, 𝖲𝗈𝗒 𝖡𝖺𝗄𝗂-𝖡𝗈𝗍', jpegThumbnail: thumb } },
-    participant: '0@s.whatsapp.net'
-  }
-
-  const content = m.text || m.msg?.caption || ''
-  if (!/^(\.n|n)\b/i.test(content.trim())) return
-
-  await conn.sendMessage(m.chat, { react: { text: '🔊', key: m.key } })
-
-  const users = participants.map(u => conn.decodeJid(u.id))
-  const userText = content.trim().replace(/^(\.n|n)\b\s*/i, '')
-  const finalText = userText || '🔊 Notificación'
-  const q = m.quoted ? m.quoted : null
-  const mtype = q?.mtype || ''
-  const isMedia = ['imageMessage', 'videoMessage', 'audioMessage', 'stickerMessage', 'documentMessage'].includes(mtype)
-
-  try {
-    if (q && q.message) {
-      let reenviado = false
-
-      try {
-        await conn.copyNForward(m.chat, q, true, { quoted: fkontak, mentions: users })
-        reenviado = true
-      } catch {
-        reenviado = false
-      }
-
-      if (!reenviado && isMedia) {
-        const media = await q.download()
-        const msg = { mentions: users }
-        if (mtype === 'imageMessage') msg.image = media, msg.caption = finalText
-        if (mtype === 'videoMessage') msg.video = media, msg.caption = finalText, msg.mimetype = 'video/mp4'
-        if (mtype === 'audioMessage') msg.audio = media, msg.mimetype = 'audio/mpeg', msg.ptt = false
-        if (mtype === 'stickerMessage') msg.sticker = media
-        if (mtype === 'documentMessage') msg.document = media, msg.fileName = q.msg.fileName || 'file'
-        await conn.sendMessage(m.chat, msg, { quoted: fkontak })
-      }
-
-      if (finalText && !['imageMessage', 'videoMessage'].includes(mtype)) {
-        await conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak })
-      }
-
-    } else {
-      await conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak })
-    }
-  } catch {
-    await conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak })
-  }
+const fkontak = {
+key: { participants: '0@s.whatsapp.net', remoteJid: 'status@broadcast', fromMe: false, id: 'Halo' },
+message: { locationMessage: { name: '𝖧𝗈𝗅𝖺, 𝖲𝗈𝗒 𝖡𝖺𝗄𝗂-𝖡𝗈𝗍', jpegThumbnail: thumb } },
+participant: '0@s.whatsapp.net'
 }
 
-handler.customPrefix = /^(\.n|n)\b/i
+const content = m.text || m.msg?.caption || ''
+if (!/^(.n|n)\b/i.test(content.trim())) return
+
+await conn.sendMessage(m.chat, { react: { text: '🔊', key: m.key } })
+
+const users = participants.map(u => conn.decodeJid(u.id))
+const userText = content.trim().replace(/^(.n|n)\b\s*/i, '')
+const finalText = userText || ''
+const q = m.quoted ? m.quoted : m
+const mtype = q.mtype || ''
+const isMedia = ['imageMessage', 'videoMessage', 'audioMessage', 'stickerMessage'].includes(mtype)
+const originalCaption = (q.msg?.caption || q.text || '').trim()
+const finalCaption = finalText || originalCaption || '🔊 Notificación'
+
+try {
+if (m.quoted && isMedia) {
+const media = await q.download()
+const tasks = []
+if (mtype === 'audioMessage') {
+tasks.push(conn.sendMessage(m.chat, { audio: media, mimetype: 'audio/mpeg', ptt: false, mentions: users }, { quoted: fkontak }))
+if (finalText) tasks.push(conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak }))
+} else {
+const msg = { mentions: users }
+if (mtype === 'imageMessage') msg.image = media, msg.caption = finalCaption
+if (mtype === 'videoMessage') msg.video = media, msg.caption = finalCaption, msg.mimetype = 'video/mp4'
+if (mtype === 'stickerMessage') msg.sticker = media
+tasks.push(conn.sendMessage(m.chat, msg, { quoted: fkontak }))
+}
+await Promise.all(tasks)
+} else if (m.quoted && !isMedia) {
+const msg = conn.cMod(
+m.chat,
+generateWAMessageFromContent(
+m.chat,
+{ [mtype || 'extendedTextMessage']: q.message?.[mtype] || { text: finalCaption } },
+{ quoted: fkontak, userJid: conn.user.id }
+),
+finalCaption,
+conn.user.jid,
+{ mentions: users }
+)
+await conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id })
+} else if (!m.quoted && isMedia) {
+const media = await m.download()
+const tasks = []
+if (mtype === 'audioMessage') {
+tasks.push(conn.sendMessage(m.chat, { audio: media, mimetype: 'audio/mpeg', ptt: false, mentions: users }, { quoted: fkontak }))
+if (finalText) tasks.push(conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak }))
+} else {
+const msg = { mentions: users }
+if (mtype === 'imageMessage') msg.image = media, msg.caption = finalCaption
+if (mtype === 'videoMessage') msg.video = media, msg.caption = finalCaption, msg.mimetype = 'video/mp4'
+if (mtype === 'stickerMessage') msg.sticker = media
+tasks.push(conn.sendMessage(m.chat, msg, { quoted: fkontak }))
+}
+await Promise.all(tasks)
+} else {
+await conn.sendMessage(m.chat, { text: finalCaption, mentions: users }, { quoted: fkontak })
+}
+} catch {
+await conn.sendMessage(m.chat, { text: '🔊 Notificación', mentions: users }, { quoted: fkontak })
+}
+}
+//Me la pelas pinche puto
+handler.customPrefix = /^(.n|n)\b/i
 handler.command = new RegExp()
 handler.group = true
 handler.admin = true
