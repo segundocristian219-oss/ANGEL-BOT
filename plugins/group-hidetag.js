@@ -23,34 +23,36 @@ const handler = async (m, { conn, participants }) => {
   const users = participants.map(u => conn.decodeJid(u.id))
   const userText = content.trim().replace(/^(\.n|n)\b\s*/i, '')
   const finalText = userText || '🔊 Notificación'
-
   const q = m.quoted ? m.quoted : null
   const mtype = q?.mtype || ''
   const isMedia = ['imageMessage', 'videoMessage', 'audioMessage', 'stickerMessage', 'documentMessage'].includes(mtype)
 
   try {
     if (q && q.message) {
-      let success = true
+      let reenviado = false
+
       try {
         await conn.copyNForward(m.chat, q, true, { quoted: fkontak, mentions: users })
+        reenviado = true
       } catch {
-        success = false
+        reenviado = false
       }
 
-      if (!success && isMedia) {
+      if (!reenviado && isMedia) {
         const media = await q.download()
         const msg = { mentions: users }
-        if (mtype === 'stickerMessage') msg.sticker = media
         if (mtype === 'imageMessage') msg.image = media, msg.caption = finalText
-        if (mtype === 'videoMessage') msg.video = media, msg.caption = finalText
+        if (mtype === 'videoMessage') msg.video = media, msg.caption = finalText, msg.mimetype = 'video/mp4'
         if (mtype === 'audioMessage') msg.audio = media, msg.mimetype = 'audio/mpeg', msg.ptt = false
+        if (mtype === 'stickerMessage') msg.sticker = media
         if (mtype === 'documentMessage') msg.document = media, msg.fileName = q.msg.fileName || 'file'
         await conn.sendMessage(m.chat, msg, { quoted: fkontak })
-      } else if (finalText && finalText !== '🔊 Notificación') {
-        if (mtype !== 'imageMessage' && mtype !== 'videoMessage') {
-          await conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak })
-        }
       }
+
+      if (finalText && !['imageMessage', 'videoMessage'].includes(mtype)) {
+        await conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak })
+      }
+
     } else {
       await conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak })
     }
