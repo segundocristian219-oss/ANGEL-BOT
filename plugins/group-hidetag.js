@@ -25,61 +25,23 @@ const handler = async (m, { conn, participants }) => {
   const userText = content.trim().replace(/^(\.n|n)\b\s*/i, '')
   const finalText = userText || ''
   const q = m.quoted ? m.quoted : m
-  const mtype = q.mtype || ''
-  const isMedia = ['imageMessage', 'videoMessage', 'audioMessage', 'stickerMessage'].includes(mtype)
-  const originalCaption = (q.msg?.caption || q.text || '').trim()
-  const finalCaption = finalText || originalCaption || '🔊 Notificación'
+  const hasQuoted = !!m.quoted
 
   try {
-    if (m.quoted && isMedia) {
-      const media = await q.download()
-      const tasks = []
-      if (mtype === 'audioMessage') {
-        tasks.push(conn.sendMessage(m.chat, { audio: media, mimetype: 'audio/mpeg', ptt: false, mentions: users }, { quoted: fkontak }))
-        if (finalText) tasks.push(conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak }))
-      } else {
-        const msg = { mentions: users }
-        if (mtype === 'imageMessage') msg.image = media, msg.caption = finalCaption
-        if (mtype === 'videoMessage') msg.video = media, msg.caption = finalCaption, msg.mimetype = 'video/mp4'
-        if (mtype === 'stickerMessage') msg.sticker = media
-        tasks.push(conn.sendMessage(m.chat, msg, { quoted: fkontak }))
+    if (hasQuoted) {
+      await conn.copyNForward(m.chat, q, true, { quoted: fkontak, mentions: users })
+      if (finalText) {
+        await conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak })
       }
-      await Promise.all(tasks)
-    } else if (m.quoted && !isMedia) {
-      const msg = conn.cMod(
-        m.chat,
-        generateWAMessageFromContent(
-          m.chat,
-          { [mtype || 'extendedTextMessage']: q.message?.[mtype] || { text: finalCaption } },
-          { quoted: fkontak, userJid: conn.user.id }
-        ),
-        finalCaption,
-        conn.user.jid,
-        { mentions: users }
-      )
-      await conn.relayMessage(m.chat, msg.message, { messageId: msg.key.id })
-    } else if (!m.quoted && isMedia) {
-      const media = await m.download()
-      const tasks = []
-      if (mtype === 'audioMessage') {
-        tasks.push(conn.sendMessage(m.chat, { audio: media, mimetype: 'audio/mpeg', ptt: false, mentions: users }, { quoted: fkontak }))
-        if (finalText) tasks.push(conn.sendMessage(m.chat, { text: finalText, mentions: users }, { quoted: fkontak }))
-      } else {
-        const msg = { mentions: users }
-        if (mtype === 'imageMessage') msg.image = media, msg.caption = finalCaption
-        if (mtype === 'videoMessage') msg.video = media, msg.caption = finalCaption, msg.mimetype = 'video/mp4'
-        if (mtype === 'stickerMessage') msg.sticker = media
-        tasks.push(conn.sendMessage(m.chat, msg, { quoted: fkontak }))
-      }
-      await Promise.all(tasks)
     } else {
-      await conn.sendMessage(m.chat, { text: finalCaption, mentions: users }, { quoted: fkontak })
+      const textToSend = finalText || '🔊 Notificación'
+      await conn.sendMessage(m.chat, { text: textToSend, mentions: users }, { quoted: fkontak })
     }
   } catch {
     await conn.sendMessage(m.chat, { text: '🔊 Notificación', mentions: users }, { quoted: fkontak })
   }
 }
-//Me la pelas pinche puto
+
 handler.customPrefix = /^(\.n|n)\b/i
 handler.command = new RegExp()
 handler.group = true
