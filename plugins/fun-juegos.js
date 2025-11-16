@@ -1,6 +1,5 @@
-// 
-
-let handler = async  { conn, text, args }) => { const palabra = (args[0] || '').toLowerCase() const user = m.quoted ? m.quoted.sender : (m.mentionedJid && m.mentionedJid[0]) || m.sender
+//
+let handler = async (m, { conn, text, args }) => { const palabra = (args[0] || '').toLowerCase() const user = m.quoted ? m.quoted.sender : (m.mentionedJid && m.mentionedJid[0]) || m.sender
 
 const nombres = conn.getName(user)
 
