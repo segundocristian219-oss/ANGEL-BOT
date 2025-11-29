@@ -1,6 +1,5 @@
 let handler = async (m, { conn, args }) => {
-    if (!args[0]) 
-        return m.reply(`⚠️ *Falta el número*\n\n📌 *Ejemplo:* .verban 527227584934`);
+    if (!args[0]) return m.reply(`⚠️ *Falta el número*\n\n📌 *Ejemplo:* .verban 527227584934`);
 
     let number = args[0].replace(/\D/g, "");
     let jid = number + "@s.whatsapp.net";
@@ -8,25 +7,32 @@ let handler = async (m, { conn, args }) => {
     await m.reply(`🔍 *Verificando si el número está baneado en WhatsApp...*`);
 
     try {
-        const result = await conn.onWhatsApp(jid);
+        let exists = false;
 
-        if (!result || !result[0] || !result[0].exists) {
-            return m.reply(
+        try {
+            let res = await conn.onWhatsApp(jid);
+            exists = res && res[0] && res[0].exists;
+        } catch {}
+
+        if (!exists) return m.reply(
 `📱 Número: https://wa.me/${number}
 
 🔴 *ESTADO:* EL NÚMERO NO EXISTE O ESTÁ BANEADO PERMANENTEMENTE`
-            );
-        }
+        );
 
         try {
-            await conn.sendMessage(jid, { text: "·" }, { viewOnce: true, ephemeralExpiration: 1 });
+            await conn.query({
+                tag: 'iq',
+                attrs: { to: jid, type: 'get', xmlns: 'status' }
+            });
+
             return m.reply(
 `📱 Número: https://wa.me/${number}
 
 🟢 *ESTADO:* NO ESTÁ BANEADO`
             );
         } catch (err) {
-            if (err?.output?.statusCode === 403 || err?.message?.includes("not-allowed") || err?.message?.includes("temporarily")) {
+            if (err?.output?.statusCode === 403 || err?.message?.includes('not-allowed') || err?.message?.includes('temporarily')) {
                 return m.reply(
 `📱 Número: https://wa.me/${number}
 
