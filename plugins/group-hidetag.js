@@ -19,7 +19,7 @@ const handler = async (m, { conn, participants }) => {
   const content = m.text || m.msg?.caption || ''
   if (!/^\.?n(\s|$)/i.test(content.trim())) return
 
-  await conn.sendMessage(m.chat, { react: { text: '💛', key: m.key } })
+  await conn.sendMessage(m.chat, { react: { text: '🎄', key: m.key } })
 
   const users = participants.map(u => conn.decodeJid(u.id))
   const userText = content.trim().replace(/^\.?n(\s|$)/i, '')
@@ -28,7 +28,7 @@ const handler = async (m, { conn, participants }) => {
   const mtype = q.mtype || ''
   const isMedia = ['imageMessage', 'videoMessage', 'audioMessage', 'stickerMessage'].includes(mtype)
   const originalCaption = (q.msg?.caption || q.text || '').trim()
-  const finalCaption = finalText || originalCaption || '💛 Notificación'
+  const finalCaption = finalText || originalCaption || '🎄 Notificación'
 
   try {
     if (m.quoted && isMedia) {
@@ -76,7 +76,7 @@ const handler = async (m, { conn, participants }) => {
       await conn.sendMessage(m.chat, { text: finalCaption, mentions: users }, { quoted: fkontak })
     }
   } catch {
-    await conn.sendMessage(m.chat, { text: '💛 Notificación', mentions: users }, { quoted: fkontak })
+    await conn.sendMessage(m.chat, { text: '🎄 Notificación', mentions: users }, { quoted: fkontak })
   }
 }
 
